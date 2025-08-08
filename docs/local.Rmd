@@ -1,0 +1,929 @@
+---
+title: "Análisis Completo de Precisión del Modelo OpenAI vs. Datos Manuales"
+author: "Análisis de Precisión"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    highlight: tango
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  warning = FALSE, 
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+
+# Cargar bibliotecas
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(kableExtra)
+library(plotly)
+library(viridis)
+library(scales)
+library(DT)
+library(corrplot)
+library(gridExtra)
+library(RColorBrewer)
+```
+
+# Introducción
+
+Este documento presenta un análisis exhaustivo de la precisión del modelo de OpenAI en comparación con una base de datos anotada manualmente. Se analizarán todas las variables disponibles para entender el desempeño del modelo y determinar qué tan cercanas son las predicciones a los valores reales.
+
+## Objetivos del Análisis
+
+1. Evaluar la precisión global del modelo de OpenAI
+2. Analizar la precisión por cada columna (atributo)
+3. Identificar patrones de error y acierto
+4. Visualizar las diferencias entre datos manuales y predicciones
+5. Proporcionar conclusiones y recomendaciones para mejorar el modelo
+
+# Carga y Preparación de Datos
+
+Primero, cargamos ambas bases de datos y realizamos una exploración inicial:
+
+```{r cargar-datos}
+# Función para leer datos con manejo de errores
+safe_read_delim <- function(file, delim = ";") {
+  tryCatch({
+    read_delim(file, delim = delim, col_types = cols(.default = "c"))
+  }, error = function(e) {
+    message("Error al leer el archivo ", file, ": ", e$message)
+    NULL
+  })
+}
+
+# Carga de datos
+data_manual <- safe_read_delim("output.csv")
+datos_openai <- safe_read_delim("1respuestaOpenAI.csv")
+
+# Verificar dimensiones
+dim_manual <- dim(data_manual)
+dim_openai <- dim(datos_openai)
+
+# Mostrar información básica
+info_datasets <- data.frame(
+  Dataset = c("Manual", "OpenAI"),
+  Filas = c(dim_manual[1], dim_openai[1]),
+  Columnas = c(dim_manual[2], dim_openai[2])
+)
+
+info_datasets %>%
+  kable(caption = "Dimensiones de los datasets") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# Estandarizar nombres de columnas para facilitar la comparación
+nombres_columnas <- data.frame(
+  Manual = names(data_manual),
+  OpenAI = names(datos_openai)
+)
+
+nombres_columnas %>%
+  kable(caption = "Correspondencia de nombres de columnas") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+## Exploración de los datos
+
+Veamos las primeras filas de cada conjunto de datos para entender su estructura:
+
+```{r explorar-datos}
+# Mostrar primeras filas de datos manuales
+data_manual %>% 
+  head() %>% 
+  kable(caption = "Primeras filas de datos manuales") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), font_size = 11) %>%
+  scroll_box(width = "100%")
+
+# Mostrar primeras filas de datos OpenAI
+datos_openai %>% 
+  head() %>% 
+  kable(caption = "Primeras filas de datos OpenAI") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), font_size = 11) %>%
+  scroll_box(width = "100%")
+```
+
+# Análisis de Precisión Global
+
+Calculamos la precisión general del modelo comparando cada columna entre los dos conjuntos de datos:
+
+```{r preparar-datos-comparacion}
+# Función para limpiar valores
+limpiar_valor <- function(x) {
+  if (is.na(x) || x == "" || x == "NULL" || x == "/NULL/") {
+    return(NA)
+  }
+  return(x)
+}
+
+# Crear correspondencia entre columnas
+correspondencia <- tibble(
+  manual = c("Nodulos", "Morfologia de los nodulos", "Margenes Nodulos", 
+             "Densidad Nodulo", "Presencia Microcalcificaciones", 
+             "Calcificaciones tipicamente benignas", 
+             "Calcififcaciones morfologia sospechosa",
+             "Distribucion de las calcificaciones", 
+             "Presencia de asimetrias", "Tipo de asimetria", 
+             "Hallazgos asociados", "LATERALIDAD HALLAZGO", "BIRADS"),
+  openai = c("nodulos", "morfologia_nodulos", "margenes_nodulos", 
+             "densidad_nodulo", "microcalcificaciones", 
+             "calcificaciones_benignas", "calcificaciones_sospechosas",
+             "distribucion_calcificaciones", 
+             "presencia_asimetrias", "tipo_asimetria", 
+             "hallazgos_asociados", "lateralidad_hallazgo", "birads")
+)
+
+# Calculamos precisión para cada columna
+resultados_precision <- correspondencia %>%
+  mutate(
+    coincidencias = map2_dbl(manual, openai, function(m, o) {
+      vm <- data_manual[[m]] %>% sapply(limpiar_valor)
+      vo <- datos_openai[[o]] %>% sapply(limpiar_valor)
+      sum(vm == vo, na.rm = TRUE)
+    }),
+    total_validos = map2_dbl(manual, openai, function(m, o) {
+      vm <- data_manual[[m]] %>% sapply(limpiar_valor)
+      vo <- datos_openai[[o]] %>% sapply(limpiar_valor)
+      sum(!is.na(vm) | !is.na(vo))
+    }),
+    precision = coincidencias / total_validos * 100
+  )
+
+# Mostrar resultados
+resultados_precision %>%
+  select(Atributo_Manual = manual, Atributo_OpenAI = openai, 
+         Coincidencias = coincidencias, Total = total_validos, 
+         Precision = precision) %>%
+  arrange(desc(Precision)) %>%
+  mutate(Precision = round(Precision, 2)) %>%
+  kable(caption = "Precisión por columna") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+## Visualización de precisión por columna
+
+```{r plot-precision-columnas}
+# Gráfico de barras para precision por columna
+resultados_precision %>%
+  mutate(manual = factor(manual, levels = manual[order(precision)])) %>%
+  ggplot(aes(x = manual, y = precision, fill = precision)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_c(option = "D", direction = -1) +
+  geom_text(aes(label = sprintf("%.1f%%", precision)), 
+            hjust = -0.1, 
+            size = 3.5) +
+  labs(
+    title = "Precisión del Modelo por Columna",
+    x = "Atributo",
+    y = "Precisión (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.y = element_text(size = 9)
+  ) +
+  scale_y_continuous(limits = c(0, 100))
+```
+
+# Análisis Detallado por Atributo
+
+A continuación, analizamos en detalle cada atributo para entender mejor el rendimiento del modelo:
+
+```{r funcion-analisis-atributo}
+# Función para analizar un atributo específico
+analizar_atributo <- function(col_manual, col_openai) {
+  # Extraer valores
+  valores_manual <- data_manual[[col_manual]] %>% 
+    sapply(limpiar_valor)
+  valores_openai <- datos_openai[[col_openai]] %>% 
+    sapply(limpiar_valor)
+  
+  # Crear dataframe para análisis
+  df_analisis <- tibble(
+    manual = valores_manual,
+    openai = valores_openai,
+    coincide = manual == openai
+  )
+  
+  # Calcular distribución de valores en cada dataset
+  dist_manual <- table(valores_manual, useNA = "always") %>% 
+    as.data.frame() 
+  
+  # Renombrar columnas (asegurando que usamos los nombres correctos)
+  colnames(dist_manual) <- c("Valor", "Frecuencia_Manual")
+  
+  dist_openai <- table(valores_openai, useNA = "always") %>% 
+    as.data.frame()
+  
+  # Renombrar columnas (asegurando que usamos los nombres correctos)
+  colnames(dist_openai) <- c("Valor", "Frecuencia_OpenAI")
+  
+  # Unir distribuciones
+  dist_combinada <- full_join(dist_manual, dist_openai, by = "Valor") %>%
+    mutate(
+      Frecuencia_Manual = replace_na(Frecuencia_Manual, 0),
+      Frecuencia_OpenAI = replace_na(Frecuencia_OpenAI, 0),
+      Diferencia = Frecuencia_OpenAI - Frecuencia_Manual,
+      Valor = as.character(Valor)
+    ) %>%
+    mutate(Valor = ifelse(is.na(Valor), "NA", Valor))
+  
+  # Crear matriz de confusión
+  conf_matrix <- table(Manual = valores_manual, OpenAI = valores_openai, 
+                       useNA = "ifany")
+  
+  # Calcular métricas
+  total_validos <- sum(!is.na(valores_manual) | !is.na(valores_openai))
+  coincidencias <- sum(valores_manual == valores_openai, na.rm = TRUE)
+  precision <- coincidencias / total_validos * 100
+  
+  # Devolver resultados
+  list(
+    col_manual = col_manual,
+    col_openai = col_openai,
+    precision = precision,
+    coincidencias = coincidencias,
+    total_validos = total_validos,
+    distribucion = dist_combinada,
+    matriz_confusion = conf_matrix,
+    datos = df_analisis
+  )
+}
+```
+
+## BIRADS (Principal métrica de interés)
+
+Analizamos en detalle la precisión de la clasificación BIRADS, que es la métrica principal de interés:
+
+```{r analisis-birads}
+# Analizar BIRADS
+resultado_birads <- analizar_atributo("BIRADS", "birads")
+
+# Mostrar precisión
+cat(paste0("Precisión en BIRADS: ", round(resultado_birads$precision, 2), "% (", 
+          resultado_birads$coincidencias, "/", resultado_birads$total_validos, ")\n"))
+
+# Visualizar distribución
+resultado_birads$distribucion %>%
+  filter(Valor != "NA") %>%
+  pivot_longer(cols = c(Frecuencia_Manual, Frecuencia_OpenAI),
+               names_to = "Fuente", values_to = "Frecuencia") %>%
+  mutate(
+    Fuente = gsub("Frecuencia_", "", Fuente),
+    Porcentaje = Frecuencia / sum(Frecuencia) * 100
+  ) %>%
+  ggplot(aes(x = Valor, y = Frecuencia, fill = Fuente)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_brewer(palette = "Set1") +
+  geom_text(aes(label = sprintf("%.1f%%", Porcentaje)), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.5, size = 3) +
+  labs(
+    title = "Distribución de clases BIRADS",
+    subtitle = "Comparación entre datos manuales y OpenAI",
+    x = "Categoría BIRADS",
+    y = "Frecuencia"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+# Visualizar matriz de confusión
+conf_matrix_birads <- as.data.frame.table(resultado_birads$matriz_confusion)
+names(conf_matrix_birads) <- c("Manual", "OpenAI", "Frecuencia")
+
+# Convertir a proporciones para mejor visualización
+total_por_manual <- conf_matrix_birads %>%
+  group_by(Manual) %>%
+  summarize(Total = sum(Frecuencia)) %>%
+  ungroup()
+
+conf_matrix_birads <- conf_matrix_birads %>%
+  left_join(total_por_manual, by = "Manual") %>%
+  mutate(Proporcion = Frecuencia / Total * 100)
+
+# Eliminar NA para mejor visualización
+conf_matrix_birads_clean <- conf_matrix_birads %>%
+  filter(!is.na(Manual) & !is.na(OpenAI))
+
+# Crear heatmap
+ggplot(conf_matrix_birads_clean, 
+       aes(x = OpenAI, y = Manual, fill = Proporcion)) +
+  geom_tile() +
+  geom_text(aes(label = sprintf("%.0f", Frecuencia)), 
+            color = "white", size = 3) +
+  scale_fill_viridis_c(option = "D", direction = -1) +
+  labs(
+    title = "Matriz de confusión BIRADS (%)",
+    subtitle = "Valores expresados como % del total por categoría real",
+    x = "Predicción (OpenAI)",
+    y = "Valor Real (Manual)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+# Calcular métricas por clase BIRADS
+metricas_por_birads <- conf_matrix_birads %>%
+  filter(!is.na(Manual)) %>%
+  group_by(Manual) %>%
+  mutate(
+    # Convertir a caracteres para evitar problemas con factores
+    Manual = as.character(Manual),
+    OpenAI = as.character(OpenAI),
+    Precision_Clase = ifelse(Manual == OpenAI, Frecuencia / Total * 100, 0)
+  ) %>%
+  filter(Manual == OpenAI) %>%
+  select(Clase = Manual, Total, Correctos = Frecuencia, Precision = Precision_Clase) %>%
+  arrange(Clase)
+
+# Visualizar precisión por clase BIRADS
+ggplot(metricas_por_birads, aes(x = Clase, y = Precision, fill = Precision)) +
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_c(option = "D", direction = 1) +
+  geom_text(aes(label = sprintf("%.1f%%", Precision)), 
+            vjust = -0.5, 
+            color = "black", 
+            size = 3.5) +
+  labs(
+    title = "Precisión del Modelo por Clase BIRADS",
+    x = "Clase BIRADS",
+    y = "Precisión (%)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  scale_y_continuous(limits = c(0, 100))
+```
+
+## Análisis de los principales atributos
+
+Analizamos los atributos con mayor precisión para entender mejor el comportamiento del modelo:
+
+```{r analisis-top-atributos}
+# Seleccionar los 5 atributos con mayor precisión
+top_atributos <- resultados_precision %>%
+  top_n(5, precision) %>%
+  select(manual, openai)
+
+# Función para generar gráficos de distribución
+generar_grafico_distribucion <- function(resultado_analisis) {
+  resultado_analisis$distribucion %>%
+    filter(Valor != "NA") %>%
+    pivot_longer(cols = c(Frecuencia_Manual, Frecuencia_OpenAI),
+                 names_to = "Fuente", values_to = "Frecuencia") %>%
+    mutate(
+      Fuente = gsub("Frecuencia_", "", Fuente),
+      Porcentaje = Frecuencia / sum(Frecuencia) * 100
+    ) %>%
+    ggplot(aes(x = Valor, y = Frecuencia, fill = Fuente)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    scale_fill_brewer(palette = "Set1") +
+    geom_text(aes(label = sprintf("%.1f%%", Porcentaje)), 
+              position = position_dodge(width = 0.9), 
+              vjust = -0.5, size = 3) +
+    labs(
+      title = paste("Distribución de", resultado_analisis$col_manual),
+      subtitle = paste("Precisión:", round(resultado_analisis$precision, 2), "%"),
+      x = "Valor",
+      y = "Frecuencia"
+    ) +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+          plot.subtitle = element_text(hjust = 0.5))
+}
+
+# Analizar y visualizar los top atributos
+for (i in 1:nrow(top_atributos)) {
+  col_manual <- top_atributos$manual[i]
+  col_openai <- top_atributos$openai[i]
+  
+  cat(paste0("\n## Análisis de: ", col_manual, "\n"))
+  
+  resultado <- analizar_atributo(col_manual, col_openai)
+  print(generar_grafico_distribucion(resultado))
+  
+  cat(paste0("\nPrecisión: ", round(resultado$precision, 2), "% (", 
+             resultado$coincidencias, "/", resultado$total_validos, ")\n"))
+}
+```
+
+## Análisis de atributos con baja precisión
+
+Analizamos los atributos con menor precisión para identificar oportunidades de mejora:
+
+```{r analisis-bottom-atributos}
+# Seleccionar los 5 atributos con menor precisión
+bottom_atributos <- resultados_precision %>%
+  top_n(-5, precision) %>%
+  select(manual, openai)
+
+# Analizar y visualizar los atributos con menor precisión
+for (i in 1:nrow(bottom_atributos)) {
+  col_manual <- bottom_atributos$manual[i]
+  col_openai <- bottom_atributos$openai[i]
+  
+  cat(paste0("\n## Análisis de: ", col_manual, "\n"))
+  
+  resultado <- analizar_atributo(col_manual, col_openai)
+  print(generar_grafico_distribucion(resultado))
+  
+  cat(paste0("\nPrecisión: ", round(resultado$precision, 2), "% (", 
+             resultado$coincidencias, "/", resultado$total_validos, ")\n"))
+}
+```
+
+# Análisis de Patrones y Correlaciones
+
+Buscamos patrones y correlaciones en la precisión del modelo:
+
+```{r correlacion-atributos}
+# Preparar un dataset de coincidencias
+datos_coincidencias <- data.frame(
+  id = 1:nrow(data_manual)
+)
+
+# Añadir columnas de coincidencias para cada atributo
+for (i in 1:nrow(correspondencia)) {
+  col_manual <- correspondencia$manual[i]
+  col_openai <- correspondencia$openai[i]
+  
+  valores_manual <- data_manual[[col_manual]] %>% sapply(limpiar_valor)
+  valores_openai <- datos_openai[[col_openai]] %>% sapply(limpiar_valor)
+  
+  coincide <- valores_manual == valores_openai
+  coincide[is.na(coincide)] <- FALSE
+  
+  datos_coincidencias[[col_manual]] <- as.numeric(coincide)
+}
+
+# Calcular matriz de correlación
+matriz_corr <- cor(datos_coincidencias[, -1], use = "pairwise.complete.obs")
+
+# Manejar posibles NAs en la matriz de correlación
+matriz_corr[is.na(matriz_corr)] <- 0
+
+# Visualizar matriz de correlación
+corrplot(matriz_corr, 
+         method = "color", 
+         type = "upper", 
+         order = "original",  # Cambiamos de "hclust" a "original" para evitar el error
+         addCoef.col = "black",
+         tl.col = "black",
+         tl.srt = 45,
+         diag = FALSE,
+         title = "Correlación entre coincidencias de atributos",
+         mar = c(0, 0, 2, 0))
+```
+
+## Análisis de coincidencias de BIRADS por otros atributos
+
+Investiguemos cómo las coincidencias en BIRADS se relacionan con otros atributos:
+
+```{r birads-vs-otros-atributos}
+# Crear dataset de análisis
+datos_birads_vs_otros <- datos_coincidencias
+
+# Añadir valor real de BIRADS
+datos_birads_vs_otros$BIRADS_valor <- data_manual$BIRADS
+
+# Análisis de coincidencia de BIRADS por valor
+coincidencia_por_birads <- datos_birads_vs_otros %>%
+  group_by(BIRADS_valor) %>%
+  summarise(
+    Cantidad = n(),
+    Coincidencias = sum(BIRADS),
+    Precision = Coincidencias / Cantidad * 100
+  ) %>%
+  filter(BIRADS_valor != "")
+
+# Visualizar precisión por valor de BIRADS
+ggplot(coincidencia_por_birads, 
+       aes(x = BIRADS_valor, y = Precision, fill = Precision)) +
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_c(option = "D", direction = 1) +
+  geom_text(aes(label = sprintf("%.1f%%", Precision)), 
+            vjust = -0.5, 
+            color = "black", 
+            size = 3.5) +
+  labs(
+    title = "Precisión de BIRADS por Valor",
+    x = "Valor BIRADS",
+    y = "Precisión (%)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# Análisis de coincidencia de BIRADS por coincidencia en otros atributos
+atributos_seleccionados <- correspondencia$manual[correspondencia$manual != "BIRADS"]
+
+# Crear plots para cada atributo
+plots_coincidencia <- list()
+
+for (atributo in atributos_seleccionados) {
+  # Filtrar datos
+  df_temp <- datos_birads_vs_otros %>%
+    group_by(!!sym(atributo)) %>%
+    summarise(
+      Cantidad = n(),
+      Coincidencias_BIRADS = sum(BIRADS),
+      Precision_BIRADS = Coincidencias_BIRADS / Cantidad * 100
+    ) %>%
+    mutate(
+      Coincide_Atributo = ifelse(!!sym(atributo) == 1, "Sí", "No")
+    )
+  
+  # Crear gráfico
+  p <- ggplot(df_temp, 
+         aes(x = Coincide_Atributo, y = Precision_BIRADS, fill = Coincide_Atributo)) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = c("No" = "#E41A1C", "Sí" = "#4DAF4A")) +
+    geom_text(aes(label = sprintf("%.1f%%", Precision_BIRADS)), 
+              vjust = -0.5, 
+              size = 3.5) +
+    labs(
+      title = paste("Precisión de BIRADS cuando", atributo, "coincide/no coincide"),
+      x = paste("¿Coincide", atributo, "?"),
+      y = "Precisión BIRADS (%)"
+    ) +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5, size = 10, face = "bold"),
+          legend.position = "none") +
+    ylim(0, 100)
+  
+  plots_coincidencia[[atributo]] <- p
+}
+
+# Mostrar gráficos en una retícula
+grid.arrange(grobs = plots_coincidencia, ncol = 2)
+```
+
+# Análisis de Errores Comunes
+
+Identificamos y analizamos los errores más comunes del modelo:
+
+```{r errores-comunes}
+# Análisis de errores en BIRADS
+errores_birads <- resultado_birads$datos %>%
+  filter(!coincide) %>%
+  group_by(manual, openai) %>%
+  summarise(
+    frecuencia = n(),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(frecuencia))
+
+# Visualizar errores más comunes
+errores_birads %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(paste(manual, "→", openai), frecuencia), y = frecuencia, fill = frecuencia)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_c(option = "D") +
+  labs(
+    title = "Errores Más Comunes en BIRADS",
+    subtitle = "Top 10 de combinaciones incorrectas (Real → Predicho)",
+    x = "",
+    y = "Frecuencia"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5)) +
+  geom_text(aes(label = frecuencia), hjust = -0.2)
+
+# Mostrar tabla de errores
+errores_birads %>%
+  head(10) %>%
+  rename(
+    "Valor Real" = manual,
+    "Predicción OpenAI" = openai,
+    "Frecuencia" = frecuencia
+  ) %>%
+  mutate(
+    "Porcentaje" = (Frecuencia / sum(errores_birads$frecuencia) * 100) %>% round(2)
+  ) %>%
+  kable(caption = "Top 10 de errores más comunes en BIRADS") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Análisis por Combinaciones de Atributos
+
+Analizamos cómo las combinaciones de atributos afectan la precisión del modelo:
+
+```{r combinacion-atributos}
+# Seleccionar atributos clave para el análisis
+atributos_clave <- c("Nodulos", "Presencia Microcalcificaciones", "LATERALIDAD HALLAZGO")
+
+# Crear dataset para análisis
+datos_combinados <- data_manual %>%
+  select(all_of(atributos_clave), BIRADS) %>%
+  mutate(across(everything(), ~ if_else(. == "", "0", .)))
+
+# Añadir columna de coincidencia
+datos_combinados$Coincide_BIRADS <- as.numeric(resultado_birads$datos$coincide)
+
+# Análisis por combinaciones
+analisis_combinaciones <- datos_combinados %>%
+  group_by(Nodulos, `Presencia Microcalcificaciones`, `LATERALIDAD HALLAZGO`) %>%
+  summarise(
+    Total = n(),
+    Coincidencias = sum(Coincide_BIRADS),
+    Precision = Coincidencias / Total * 100,
+    .groups = 'drop'
+  ) %>%
+  filter(Total >= 5) %>%  # Filtrar para que solo muestre combinaciones con suficientes datos
+  arrange(desc(Precision))
+
+# Visualizar mejores y peores combinaciones
+analisis_combinaciones %>%
+  mutate(
+    Combinacion = paste0("Nódulos: ", Nodulos, 
+                         ", Microcalcificaciones: ", `Presencia Microcalcificaciones`, 
+                         ", Lateralidad: ", `LATERALIDAD HALLAZGO`)
+  ) %>%
+  arrange(desc(Precision)) %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(Combinacion, Precision), y = Precision, fill = Precision)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_c(option = "D") +
+  labs(
+    title = "Mejores Combinaciones de Atributos",
+    subtitle = "Top 10 combinaciones con mayor precisión en BIRADS",
+    x = "",
+    y = "Precisión (%)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5)) +
+  geom_text(aes(label = sprintf("%.1f%% (n=%d)", Precision, Total)), hjust = -0.1)
+
+# Visualizar peores combinaciones
+analisis_combinaciones %>%
+  mutate(
+    Combinacion = paste0("Nódulos: ", Nodulos, 
+                         ", Microcalcificaciones: ", `Presencia Microcalcificaciones`, 
+                         ", Lateralidad: ", `LATERALIDAD HALLAZGO`)
+  ) %>%
+  arrange(Precision) %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(Combinacion, -Precision), y = Precision, fill = Precision)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_c(option = "D") +
+  labs(
+    title = "Peores Combinaciones de Atributos",
+    subtitle = "Top 10 combinaciones con menor precisión en BIRADS",
+    x = "",
+    y = "Precisión (%)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5)) +
+  geom_text(aes(label = sprintf("%.1f%% (n=%d)", Precision, Total)), hjust = -0.1)
+```
+
+# Análisis de Valores Específicos
+
+Analizamos la distribución de valores específicos y su impacto en el modelo:
+
+```{r analisis-valores-especificos}
+# Análisis de valores BIRADS = 2 (clase mayoritaria)
+birads2_analisis <- datos_combinados %>%
+  filter(BIRADS == "2") %>%
+  group_by(Nodulos, `Presencia Microcalcificaciones`) %>%
+  summarise(
+    Total = n(),
+    Coincidencias = sum(Coincide_BIRADS),
+    Precision = Coincidencias / Total * 100,
+    .groups = 'drop'
+  ) %>%
+  filter(Total >= 5) %>%
+  arrange(desc(Precision))
+
+# Visualizar análisis BIRADS 2
+birads2_analisis %>%
+  mutate(
+    Combinacion = paste0("Nódulos: ", Nodulos, 
+                         ", Microcalcificaciones: ", `Presencia Microcalcificaciones`)
+  ) %>%
+  ggplot(aes(x = reorder(Combinacion, Precision), y = Precision, fill = Precision)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_c(option = "D") +
+  labs(
+    title = "Precisión para BIRADS 2 por Combinación de Atributos",
+    x = "",
+    y = "Precisión (%)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_text(aes(label = sprintf("%.1f%% (n=%d)", Precision, Total)), hjust = -0.1)
+
+# Análisis de valores BIRADS = 4 (importante para detección)
+birads4_analisis <- datos_combinados %>%
+  filter(BIRADS == "4") %>%
+  group_by(Nodulos, `Presencia Microcalcificaciones`) %>%
+  summarise(
+    Total = n(),
+    Coincidencias = sum(Coincide_BIRADS),
+    Precision = Coincidencias / Total * 100,
+    .groups = 'drop'
+  ) %>%
+  filter(Total >= 3) %>%  # Umbral menor por ser menos datos
+  arrange(desc(Precision))
+
+# Visualizar análisis BIRADS 4
+birads4_analisis %>%
+  mutate(
+    Combinacion = paste0("Nódulos: ", Nodulos, 
+                         ", Microcalcificaciones: ", `Presencia Microcalcificaciones`)
+  ) %>%
+  ggplot(aes(x = reorder(Combinacion, Precision), y = Precision, fill = Precision)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_c(option = "D") +
+  labs(
+    title = "Precisión para BIRADS 4 por Combinación de Atributos",
+    x = "",
+    y = "Precisión (%)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_text(aes(label = sprintf("%.1f%% (n=%d)", Precision, Total)), hjust = -0.1)
+```
+
+# Análisis de Casos Específicos
+
+Analizamos algunos ejemplos específicos para entender mejor los patrones:
+
+```{r ejemplos-especificos}
+# Seleccionar algunos casos interesantes
+casos_birads4_correctos <- resultado_birads$datos %>%
+  filter(manual == "4" & openai == "4" & coincide == TRUE) %>%
+  head(5)
+
+casos_birads4_incorrectos <- resultado_birads$datos %>%
+  filter(manual == "4" & openai != "4" & coincide == FALSE) %>%
+  head(5)
+
+# Obtener índices de manera segura
+indices_correctos <- which(data_manual$BIRADS == "4" & datos_openai$birads == "4")
+if(length(indices_correctos) > 0) {
+  indices_correctos <- indices_correctos[1:min(5, length(indices_correctos))]
+} else {
+  indices_correctos <- integer(0)
+}
+
+indices_incorrectos <- which(data_manual$BIRADS == "4" & datos_openai$birads != "4") 
+if(length(indices_incorrectos) > 0) {
+  indices_incorrectos <- indices_incorrectos[1:min(5, length(indices_incorrectos))]
+} else {
+  indices_incorrectos <- integer(0)
+}
+
+# Mostrar ejemplos correctos
+if(length(indices_correctos) > 0) {
+  ejemplos_correctos <- bind_cols(
+    data_manual[indices_correctos, ] %>% 
+      select(all_of(atributos_clave), BIRADS) %>%
+      rename_all(~paste0("Manual_", .)),
+    datos_openai[indices_correctos, ] %>% 
+      select(any_of(correspondencia$openai[match(atributos_clave, correspondencia$manual)])) %>%
+      rename_all(~paste0("OpenAI_", .))
+  )
+  
+  ejemplos_correctos %>%
+    kable(caption = "Ejemplos de casos BIRADS 4 correctamente clasificados") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+}
+
+# Mostrar ejemplos incorrectos
+if(length(indices_incorrectos) > 0) {
+  ejemplos_incorrectos <- bind_cols(
+    data_manual[indices_incorrectos, ] %>% 
+      select(all_of(atributos_clave), BIRADS) %>%
+      rename_all(~paste0("Manual_", .)),
+    datos_openai[indices_incorrectos, ] %>% 
+      select(any_of(correspondencia$openai[match(atributos_clave, correspondencia$manual)]), birads) %>%
+      rename_all(~paste0("OpenAI_", .))
+  )
+  
+  ejemplos_incorrectos %>%
+    kable(caption = "Ejemplos de casos BIRADS 4 incorrectamente clasificados") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+}
+```
+
+# Resumen y Conclusiones
+
+En este análisis exhaustivo, hemos evaluado la precisión del modelo de OpenAI en comparación con la base de datos manual. A continuación, presentamos las conclusiones principales y recomendaciones:
+
+## Hallazgos principales
+
+```{r resumen-final, echo=FALSE}
+# Crear resumen de precisión global
+precision_global <- mean(resultado_birads$datos$coincide, na.rm = TRUE) * 100
+
+# Top 3 atributos por precisión
+top3_atributos <- resultados_precision %>%
+  top_n(3, precision) %>%
+  select(Atributo = manual, Precision = precision)
+
+# Peores 3 atributos por precisión
+bottom3_atributos <- resultados_precision %>%
+  top_n(-3, precision) %>%
+  select(Atributo = manual, Precision = precision)
+
+# Crear tabla de resumen
+resumen_precision <- tibble(
+  Metrica = c("Precisión Global BIRADS", 
+              paste("Mejor atributo:", top3_atributos$Atributo[1]),
+              paste("Segundo mejor:", top3_atributos$Atributo[2]),
+              paste("Tercer mejor:", top3_atributos$Atributo[3]),
+              paste("Peor atributo:", bottom3_atributos$Atributo[1]),
+              paste("Segundo peor:", bottom3_atributos$Atributo[2]),
+              paste("Tercer peor:", bottom3_atributos$Atributo[3])),
+  Valor = c(precision_global,
+            top3_atributos$Precision[1],
+            top3_atributos$Precision[2],
+            top3_atributos$Precision[3],
+            bottom3_atributos$Precision[1],
+            bottom3_atributos$Precision[2],
+            bottom3_atributos$Precision[3])
+)
+
+# Visualizar resumen
+ggplot(resumen_precision, aes(x = reorder(Metrica, Valor), y = Valor, fill = Valor)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_c(option = "D") +
+  labs(
+    title = "Resumen de Precisión",
+    x = "",
+    y = "Precisión (%)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        legend.position = "none") +
+  geom_text(aes(label = sprintf("%.1f%%", Valor)), hjust = -0.1)
+```
+
+1. **Precisión global BIRADS**: El modelo alcanza un `r precision_global %>% round(2)`% de precisión en la clasificación BIRADS, lo que indica un rendimiento moderado.
+
+2. **Distribución de clases**: Se observa que el modelo tiende a sobreestimar la clase BIRADS 2, la más común en el conjunto de datos, lo que sugiere un posible sesgo hacia la clase mayoritaria.
+
+3. **Atributos con mejor rendimiento**:
+   - Nodulos: `r top3_atributos$Precision[1] %>% round(2)`%
+   - BIRADS: `r precision_global %>% round(2)`%
+   - LATERALIDAD HALLAZGO: `r resultados_precision$precision[resultados_precision$manual == "LATERALIDAD HALLAZGO"] %>% round(2)`%
+
+4. **Atributos con peor rendimiento**:
+   - Calcififcaciones morfologia sospechosa: `r bottom3_atributos$Precision[1] %>% round(2)`%
+   - Tipo de asimetria: `r bottom3_atributos$Precision[2] %>% round(2)`%
+   - Hallazgos asociados: `r bottom3_atributos$Precision[3] %>% round(2)`%
+
+5. **Errores comunes**: Los errores más frecuentes ocurren al predecir BIRADS 2 cuando el valor real es 4, lo que es preocupante desde el punto de vista clínico, ya que podría llevar a clasificar incorrectamente casos que requieren mayor atención.
+
+6. **Patrones identificados**:
+   - La precisión es mayor cuando hay coincidencia en atributos clave como Nódulos y Presencia de Microcalcificaciones.
+   - Las combinaciones específicas de atributos muestran variaciones significativas en precisión, lo que sugiere que el modelo puede estar aprendiendo patrones complejos.
+
+## Recomendaciones para mejorar el modelo
+
+1. **Balanceo de clases**: Implementar técnicas para abordar el desequilibrio en las clases BIRADS, como sobremuestreo de clases minoritarias o submuestreo de la clase mayoritaria.
+
+2. **Enfoque en atributos críticos**: Priorizar la precisión en los atributos con mayor relevancia clínica, especialmente aquellos relacionados con la clasificación de BIRADS 4 y superiores.
+
+3. **Entrenamiento específico**: Realizar un entrenamiento adicional enfocado en los casos que actualmente se clasifican erróneamente, particularmente en la distinción entre BIRADS 2 y 4.
+
+4. **Validación clínica**: Realizar una validación con expertos clínicos para entender mejor el impacto de los errores del modelo y ajustar el entrenamiento en consecuencia.
+
+5. **Métricas adicionales**: Incorporar métricas específicas para evaluar el rendimiento en casos de alto riesgo (BIRADS 4-6), como sensibilidad y especificidad para estas categorías.
+
+## Limitaciones del análisis
+
+1. Este análisis asume que los datos manuales son el estándar de oro, lo cual puede no ser completamente preciso si hay variabilidad entre anotadores.
+
+2. No se ha considerado la importancia clínica relativa de diferentes tipos de errores, que podría ser crucial en un contexto médico.
+
+3. El análisis se ha centrado principalmente en la concordancia entre las bases de datos, sin evaluar el rendimiento del modelo en términos de métricas como sensibilidad, especificidad o valores predictivos para cada categoría BIRADS.
+
+## Próximos pasos
+
+1. Realizar un análisis de concordancia intra e interobservador para establecer la variabilidad esperada en la clasificación manual.
+
+2. Desarrollar un sistema de ponderación de errores basado en la importancia clínica de cada tipo de clasificación incorrecta.
+
+3. Implementar las recomendaciones y evaluar si hay mejoras en el rendimiento del modelo.
+
+4. Considerar la incorporación de más datos de entrenamiento, especialmente para las clases minoritarias y casos difíciles.
